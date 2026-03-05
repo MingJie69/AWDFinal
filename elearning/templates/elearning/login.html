@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eLearning - Login/Register</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="/static/js/spa.js" defer></script>
+    <style>
+        body { font-family: sans-serif; background: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .form-container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 350px; }
+        h2 { text-align: center; color: #2c3e50; }
+        input, select { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; border: none; border-radius: 6px; background: #3498db; color: white; font-weight: bold; cursor: pointer; }
+        button:hover { background: #2980b9; }
+        .hidden { display: none; }
+        p { text-align: center; font-size: 0.9em; }
+        a { color: #3498db; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="form-container">
+        <div id="login-section">
+            <h2>Login</h2>
+            <input type="text" id="login-user" placeholder="Username">
+            <input type="password" id="login-pass" placeholder="Password">
+            <button onclick="handleLogin()">Login</button>
+            <p>New user? <a href="#" onclick="toggleAuth(true)">Register here</a></p>
+        </div>
+
+        <div id="register-section" class="hidden">
+            <h2>Register</h2>
+            <input type="text" id="reg-user" placeholder="Username">
+            <input type="password" id="reg-pass" placeholder="Password">
+            <input type="text" id="reg-fullname" placeholder="Full Name">
+            
+            <label style="font-size: 0.8rem; color: #666;">Profile Photo:</label>
+            <input type="file" id="reg-photo" accept="image/*">
+            
+            <select id="reg-type">
+                <option value="1">Student</option>
+                <option value="2">Teacher</option>
+            </select>
+            <button onclick="handleRegister()">Create Account</button>
+            <p>Already have an account? <a href="#" onclick="toggleAuth(false)">Login here</a></p>
+        </div>
+    </div>
+
+    <script>
+        function toggleAuth(showRegister) {
+            document.getElementById('login-section').classList.toggle('hidden', showRegister);
+            document.getElementById('register-section').classList.toggle('hidden', !showRegister);
+        }
+    </script>
+</body>
+</html>
