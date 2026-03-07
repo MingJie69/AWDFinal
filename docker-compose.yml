@@ -1,21 +1,29 @@
 version: '3.8'
 
 services:
+  # 1. 数据库服务
   db:
     image: postgres:15
+    container_name: awdfinal-db-1
     volumes:
       - postgres_data:/var/lib/postgresql/data/
     environment:
       - POSTGRES_DB=elearningdb
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=Jiejie87
+    restart: always
 
+  # 2. Redis 服务：实时聊天消息的中转站
+  redis:
+    image: redis:7-alpine
+    container_name: awdfinal-redis-1
+    restart: always
+
+  # 3. Django Web 服务 (使用 Daphne 启动 ASGI)
   web:
     build: .
-    # 修改 1：将 gunicorn 替换为 daphne 以支持 ASGI/WebSocket
-    # 修改 2：移除 command 里的 migrate 和 collectstatic，建议启动后手动执行一次更稳妥
-    command: >
-      sh -c "daphne -b 0.0.0.0 -p 8000 final.asgi:application"
+    container_name: awdfinal-web-1
+    command: daphne -b 0.0.0.0 -p 8000 final.asgi:application
     volumes:
       - .:/app
       - static_volume:/app/staticfiles
@@ -28,15 +36,19 @@ services:
       - DB_PASSWORD=Jiejie87
       - DB_HOST=db
       - DB_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
       - DJANGO_DEBUG=False
-      # 修改 3：确保环境变量名与 settings.py 匹配
-      - SERVER_IP=165.245.176.218 
-      - DJANGO_SECRET_KEY=your-secret-key-here
+      - SERVER_IP=165.245.176.218
+      - DJANGO_SECRET_KEY=your-production-secret-key-here
     depends_on:
       - db
+      - redis
+    restart: always
 
+  # 4. Nginx 服务：处理 HTTP、WebSocket 转发和静态文件
   nginx:
     image: nginx:latest
+    container_name: awdfinal-nginx-1
     ports:
       - "80:80"
     volumes:
@@ -45,6 +57,7 @@ services:
       - media_volume:/app/media
     depends_on:
       - web
+    restart: always
 
 volumes:
   postgres_data:

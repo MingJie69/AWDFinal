@@ -74,7 +74,7 @@ DATABASES = {
         'NAME': os.environ.get('DB_NAME', 'elearningdb'),
         'USER': os.environ.get('DB_USER', 'postgres'),
         'PASSWORD': os.environ.get('DB_PASSWORD', 'Jiejie87'),
-        'HOST': os.environ.get('DB_HOST', 'localhost'), 
+        'HOST': os.environ.get('DB_HOST', 'db'),
         'PORT': os.environ.get('DB_PORT', '5432'),
     }
 }
@@ -85,7 +85,7 @@ CHANNEL_LAYERS = {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
             # 生产环境 Redis 地址
-            "hosts": [os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')],
+            "hosts": [os.environ.get('REDIS_URL', 'redis://redis:6379/0')],
         },
     },
 }
@@ -106,11 +106,11 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media' # 老师上传的资料存储位置
 
-# --- 8. 安全与跨域 ---
-# 信任你的服务器域名，解决 CSRF 403 问题
 CSRF_TRUSTED_ORIGINS = [
     f"http://{os.environ.get('SERVER_DOMAIN', 'localhost')}",
     f"https://{os.environ.get('SERVER_DOMAIN', 'localhost')}",
+    f"http://{os.environ.get('SERVER_IP', '165.245.176.218')}",
+    "http://165.245.176.218",
     "http://127.0.0.1:8000"
 ]
 
