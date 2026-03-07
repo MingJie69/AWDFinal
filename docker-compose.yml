@@ -12,10 +12,10 @@ services:
 
   web:
     build: .
+    # 修改 1：将 gunicorn 替换为 daphne 以支持 ASGI/WebSocket
+    # 修改 2：移除 command 里的 migrate 和 collectstatic，建议启动后手动执行一次更稳妥
     command: >
-      sh -c "python manage.py collectstatic --noinput &&
-             python manage.py migrate &&
-             gunicorn final.wsgi:application --bind 0.0.0.0:8000"
+      sh -c "daphne -b 0.0.0.0 -p 8000 final.asgi:application"
     volumes:
       - .:/app
       - static_volume:/app/staticfiles
@@ -29,7 +29,9 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
       - DJANGO_DEBUG=False
-      - DJANGO_ALLOWED_HOSTS=165.245.176.218,localhost,127.0.0.1
+      # 修改 3：确保环境变量名与 settings.py 匹配
+      - SERVER_IP=165.245.176.218 
+      - DJANGO_SECRET_KEY=your-secret-key-here
     depends_on:
       - db
 
