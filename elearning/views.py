@@ -165,9 +165,7 @@ def publish_assignment(request):
 
     try:
         course = Course.objects.get(id=course_id)
-        if course not in request.user.teacher_profile.teaching_courses.all():
-            return Response({"error": "Unauthorized course selection"}, status=403)
-
+        
         Assignment.objects.create(
             course=course,
             teacher=request.user,
@@ -176,16 +174,19 @@ def publish_assignment(request):
             deadline=deadline,
             material=material
         )
+
         students = StudentProfile.objects.filter(enrolled_courses=course)
         for profile in students:
             Notification.objects.create(
                 user=profile.user,
-                message=f"New Assignment: '{title}' has been posted in {course.title}."
+                message=f"New Material: '{title}' has been added to {course.title}."
             )
-            return Response({"message": "Assignment published successfully!"}, status=201)
-    except Exception as e:
-        return Response({"error": str(e)}, status=400)
+        
+        return Response({"message": "Assignment published successfully!"}, status=201)
 
+    except Exception as e:
+        print(f"--- Publish Error: {str(e)} ---")
+        return Response({"error": str(e)}, status=500)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def teacher_select_course(request):
@@ -498,3 +499,58 @@ def update_profile_settings(request):
     
     user.save()
     return Response({"message": "Profile updated successfully!", "full_name": user.full_name})
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def remove_student_from_course(request, course_id, student_id):
+    if request.user.user_type != 2:
+        return Response({"error": "Unauthorized: Only teachers can remove students."}, status=403)
+    
+    try:
+        course = Course.objects.get(pk=course_id)
+        if course not in request.user.teacher_profile.teaching_courses.all():
+            return Response({"error": "You do not have permission to manage this course."}, status=403)
+        
+        student_to_remove = User.objects.get(pk=student_id)
+        if student_to_remove.user_type != 1:
+            return Response({"error": "Target user is not a student."}, status=400)
+      
+        student_profile = student_to_remove.student_profile
+        if course in student_profile.enrolled_courses.all():
+            student_profile.enrolled_courses.remove(course)
+
+            Notification.objects.create(
+                user=student_to_remove,
+                message=f"Notice: You have been removed from the course '{course.title}' by the instructor."
+            )
+            
+            return Response({"message": f"Student {student_to_remove.username} removed from {course.title}."})
+        else:
+            return Response({"error": "Student is not enrolled in this course."}, status=400)
+
+    except Course.DoesNotExist:
+        return Response({"error": "Course not found."}, status=404)
+    except User.DoesNotExist:
+        return Response({"error": "Student not found."}, status=404)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def view_course_feedback(request, course_id):
+    if request.user.user_type != 2:
+        return Response({"error": "Unauthorized: Only teachers can view feedback."}, status=403)
+    
+    try:
+        feedbacks = Feedback.objects.filter(course_id=course_id).order_by('-created_at')
+        
+        data = [{
+            "id": f.id,
+            "student_name": f.student.full_name or f.student.username,
+            "content": f.content,
+            "date": f.created_at.strftime("%Y-%m-%d %H:%M")
+        } for f in feedbacks]
+        
+        return Response(data, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)

@@ -1,48 +1,56 @@
 let currentUserType = null;
-let chatInterval = null;
-
-function stopChatPolling() {
-    if (chatInterval) {
-        clearInterval(chatInterval);
-        chatInterval = null;
-        console.log("Chat polling stopped.");
-    }
-}
+let notificationInterval = null;
+let currentUserName = "";
+let chatSocket = null;
 
 window.addEventListener('load', () => {
+    // 页面初次加载
     if (document.getElementById('user-data') || document.getElementById('welcome-msg')) {
         loadHomeData();
     }
 
+    // Dashboard 按钮
     const dashBtn = document.getElementById('nav-dashboard');
     if (dashBtn) {
         dashBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            stopChatPolling();
+            closeChat(); // 修改：关闭 WebSocket 连接并停止通知轮询
             resetDashboardHTML();
             loadHomeData();
         });
     }
 
+    // My Courses 按钮
     const myCoursesBtn = document.getElementById('nav-my-courses');
     if (myCoursesBtn) {
         myCoursesBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            stopChatPolling();
+            closeChat(); // 修改：确保切换页面时断开聊天连接
             if (currentUserType) loadMyCourses(currentUserType);
         });
     }
 
+    // Messages 按钮
     const msgBtn = document.getElementById('nav-messages');
     if (msgBtn) {
         msgBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            stopChatPolling();
+            closeChat(); // 修改：进入消息选择列表前先重置之前的聊天状态
             if (currentUserType === 2) {
                 showCourseSelectionForChat();
             } else {
                 showStudentCourseSelection();
             }
+        });
+    }
+
+    // Settings 按钮 (建议添加)
+    const settingsBtn = document.getElementById('nav-settings');
+    if (settingsBtn) {
+        settingsBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeChat(); // 修改：进入设置页面时停止所有实时任务
+            loadSettingsPage();
         });
     }
 });
@@ -53,11 +61,13 @@ async function loadHomeData() {
         if (!response.ok) throw new Error("Not authenticated");
         const data = await response.json();
 
+        currentUserName = data.user_info.username;
         currentUserType = data.user_info.user_type;
         const isTeacher = (currentUserType === 2);
 
         if (typeof loadNotifications === 'function') {
             loadNotifications();
+            startNotificationPolling(); 
         }
 
         const enrolledIds = data.enrolled_ids || [];
@@ -103,10 +113,15 @@ async function loadHomeData() {
     }
 }
 
-function renderCourseList(courses, userType, enrolledIds = []) {
-    const listContainer = document.getElementById('course-list');
+function renderCourseList(courses, userType, enrolledIds = [], containerId = 'course-list') {
+    const listContainer = document.getElementById(containerId);
     if (!listContainer) return;
     listContainer.innerHTML = '';
+
+    if (!courses || courses.length === 0) {
+        listContainer.innerHTML = '<p class="text-muted" style="padding:10px;">No courses found.</p>';
+        return;
+    }
 
     courses.forEach(course => {
         const div = document.createElement('div');
@@ -114,16 +129,23 @@ function renderCourseList(courses, userType, enrolledIds = []) {
 
         let actionButtons = '';
         if (userType === 1) {
+            // ✅ 使用真实的 enrolledIds 判断状态
             const isEnrolled = enrolledIds.includes(course.id);
             actionButtons = `
-                <button class="btn-action" style="background: ${isEnrolled ? '#bdc3c7' : '#27ae60'};" 
-                        onclick="${isEnrolled ? '' : `enrollInCourse(${course.id})`}" ${isEnrolled ? 'disabled' : ''}>
-                    ${isEnrolled ? 'Enrolled' : 'Enroll'}
+                <button class="btn-action" 
+                        style="background: ${isEnrolled ? '#bdc3c7' : '#27ae60'};" 
+                        onclick="${isEnrolled ? '' : `enrollInCourse(${course.id})`}" 
+                        ${isEnrolled ? 'disabled' : ''}>
+                    ${isEnrolled ? 'Enrolled' : 'Enroll Now'}
                 </button>
                 <button class="btn-action" style="background:#9b59b6;" onclick="submitFeedback(${course.id})">Feedback</button>
             `;
         } else {
-            actionButtons = `<button class="btn-action" style="background:#e67e22;" onclick="viewStudents(${course.id}, '${course.title}')">View Students</button>`;
+            // 老师视角
+            actionButtons = `
+            <button class="btn-action" style="background:#e67e22;" onclick="viewStudents(${course.id}, '${course.title}')">View Students</button>
+            <button class="btn-action" style="background:#9b59b6;" onclick="viewFeedback(${course.id}, '${course.title}')">View Feedback</button>
+            `;
         }
 
         div.innerHTML = `
@@ -270,54 +292,109 @@ async function openChat(otherUserId, otherUserName) {
     const container = document.querySelector('.content-container');
     container.innerHTML = `
         <section class="card chat-panel">
-            <div class="card-title">Chatting with ${otherUserName}</div>
+            <div class="card-title">Chatting with ${otherUserName} (Real-time)</div>
             <div id="chat-box" style="height: 350px; overflow-y: auto; border: 1px solid #eee; padding: 15px; margin-bottom: 15px; background: #fff; border-radius: 8px;">
                 Loading conversation history...
             </div>
-            <div class="status-input-group">
+            <div class="status-update-section">
                 <input type="text" id="chat-input" placeholder="Type a message..." style="flex-grow: 1;">
-                <button class="btn-action" onclick="handleSendMessage(${otherUserId})">Send</button>
+                <button class="btn-action" id="chat-send-btn">Send</button>
             </div>
-            <button class="btn-action" style="background:#95a5a6; margin-top:10px;" onclick="loadHomeData()">Exit Chat</button>
+            <button class="btn-action" style="background:#95a5a6; margin-top:10px;" onclick="closeChat(); loadHomeData();">Exit Chat</button>
         </section>
     `;
 
-    refreshChat(otherUserId);
-    stopChatPolling();
-    chatInterval = setInterval(() => refreshChat(otherUserId), 3000);
+    await fetchChatHistory(otherUserId);
+
+    setupChatSocket(otherUserId);
+
+    const sendBtn = document.getElementById('chat-send-btn');
+    const chatInput = document.getElementById('chat-input');
+
+    sendBtn.onclick = () => {
+        const message = chatInput.value.trim();
+        if (message && chatSocket && chatSocket.readyState === WebSocket.OPEN) {
+            chatSocket.send(JSON.stringify({ 'message': message })); 
+            chatInput.value = '';
+        }
+    };
+
+    chatInput.onkeypress = (e) => {
+        if (e.key === 'Enter') sendBtn.click();
+    };
 }
 
-async function refreshChat(otherUserId) {
+function setupChatSocket(otherUserId) {
+    if (chatSocket) chatSocket.close();
+
+    const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+    chatSocket = new WebSocket(`${wsScheme}://${window.location.host}/ws/chat/${otherUserId}/`);
+
+    chatSocket.onmessage = function(e) {
+        const data = JSON.parse(e.data);
+        
+        const isMe = (data.sender === currentUserName); 
+        
+        console.log("--- WebSocket New Message ---");
+        console.log("Logged-in User (Me):", currentUserName);
+        console.log("Message Sender:", data.sender);
+        console.log("Is it Me?", isMe ? "YES (Align Right)" : "NO (Align Left)");
+        console.log("----------------------------");
+
+        const displaySender = isMe ? "Me" : data.sender;
+        appendMessage(displaySender, data.message, isMe);
+    };
+
+    chatSocket.onclose = function(e) { console.log('Chat socket closed'); };
+}
+
+async function fetchChatHistory(otherUserId) {
+    const chatBox = document.getElementById('chat-box');
     try {
         const response = await fetch(`/api/chat/history/${otherUserId}/`);
-        if (!response.ok) return;
+        if (!response.ok) throw new Error("Failed to load history");
+        
         const messages = await response.json();
-        const chatBox = document.getElementById('chat-box');
-        if (!chatBox) return;
+        
+        chatBox.innerHTML = ''; 
 
-        chatBox.innerHTML = messages.map(m => `
-            <div style="text-align: ${m.is_me ? 'right' : 'left'}; margin-bottom: 10px;">
-                <div style="display: inline-block; padding: 10px; border-radius: 15px; background: ${m.is_me ? '#3498db' : '#ecf0f1'}; color: ${m.is_me ? 'white' : 'black'};">
-                    <small style="display: block; font-size: 0.6rem; opacity: 0.7;">${m.timestamp}</small>
-                    ${m.message}
-                </div>
-            </div>
-        `).join('');
+        if (messages.length === 0) {
+            chatBox.innerHTML = '<p class="text-muted" style="text-align:center;">No previous messages.</p>';
+        } else {
+            messages.forEach(m => {
+                appendMessage(m.sender_name || (m.is_me ? "Me" : otherUserId), m.message, m.is_me);
+            });
+        }
         chatBox.scrollTop = chatBox.scrollHeight;
-    } catch (e) { console.error("Chat refresh error:", e); }
+    } catch (e) {
+        console.error("History Error:", e);
+        chatBox.innerHTML = 'Error loading history.';
+    }
 }
 
-async function handleSendMessage(receiverId) {
-    const input = document.getElementById('chat-input');
-    const text = input.value.trim();
-    if (!text) return;
-    await fetch('/api/chat/send/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
-        body: JSON.stringify({ receiver_id: receiverId, message: text })
-    });
-    input.value = '';
-    refreshChat(receiverId);
+function appendMessage(sender, message, isMe = false) {
+    const chatBox = document.getElementById('chat-box');
+    if (!chatBox) return;
+
+    const div = document.createElement('div');
+    div.style.textAlign = isMe ? 'right' : 'left';
+    div.style.marginBottom = "10px";
+    
+    div.innerHTML = `
+        <div style="display: inline-block; padding: 10px; border-radius: 15px; 
+                    background: ${isMe ? '#3498db' : '#ecf0f1'}; 
+                    color: ${isMe ? 'white' : 'black'}; max-width: 80%;">
+            <small style="display: block; font-size: 0.6rem; opacity: 0.7;">${sender}</small>
+            ${message}
+        </div>
+    `;
+    
+    chatBox.appendChild(div);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function closeChat() {
+    if (chatSocket) chatSocket.close();
 }
 
 async function performSearch() {
@@ -437,7 +514,7 @@ async function viewStudents(courseId, courseTitle = "this course") {
         const response = await fetch(`/api/teacher/course-students/${courseId}/`);
         if (!response.ok) throw new Error("Unauthorized or Course not found");
 
-        const students = await response.json();
+        const members = await response.json();
         const mainContent = document.querySelector('.content-container');
 
         let html = `
@@ -446,10 +523,13 @@ async function viewStudents(courseId, courseTitle = "this course") {
                 <div class="user-list" style="margin-top: 20px;">
         `;
 
-        if (students.length === 0) {
+        if (members.length === 0) {
             html += `<p class="text-muted" style="padding: 10px;">No students have enrolled in this course yet.</p>`;
         } else {
-            students.forEach(s => {
+            members.forEach(s => {
+                // 只有当用户类型为 1 (Student) 时，才显示删除按钮
+                const isStudent = (s.user_type === 1);
+                
                 html += `
                     <div class="user-result-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #eee;">
                         <div class="student-info" style="cursor: pointer;" onclick="viewUserProfile(${s.id})">
@@ -458,13 +538,16 @@ async function viewStudents(courseId, courseTitle = "this course") {
                         </div>
                         <div style="display: flex; gap: 8px;">
                             <button class="btn-action" style="padding: 6px 12px; font-size: 0.85rem; background: #3498db;" 
-                                    onclick="viewUserProfile(${s.id})">
-                                Profile
-                            </button>
+                                    onclick="viewUserProfile(${s.id})">Profile</button>
                             <button class="btn-action" style="padding: 6px 12px; font-size: 0.85rem; background: #2ecc71;" 
-                                    onclick="openChat(${s.id}, '${s.full_name || s.username}')">
-                                Message
-                            </button>
+                                    onclick="openChat(${s.id}, '${s.full_name || s.username}')">Message</button>
+                            
+                            ${isStudent ? `
+                                <button class="btn-action" style="padding: 6px 12px; font-size: 0.85rem; background: #e74c3c;" 
+                                        onclick="removeStudent(${courseId}, ${s.id}, '${s.username}')">
+                                    Remove
+                                </button>
+                            ` : ''}
                         </div>
                     </div>`;
             });
@@ -472,8 +555,7 @@ async function viewStudents(courseId, courseTitle = "this course") {
 
         html += `
                 </div>
-                <button class="btn-action" style="margin-top: 25px; background: #95a5a6;" 
-                        onclick="loadHomeData()">
+                <button class="btn-action" style="margin-top: 25px; background: #95a5a6;" onclick="loadHomeData()">
                     Back to Dashboard
                 </button>
             </section>
@@ -777,7 +859,6 @@ document.getElementById('nav-my-courses').addEventListener('click', (e) => {
 async function loadMyCourses(userType) {
     try {
         const apiPath = (userType === 2) ? '/api/teacher/my-courses/' : '/api/home/';
-
         const response = await fetch(apiPath);
         const data = await response.json();
 
@@ -785,26 +866,26 @@ async function loadMyCourses(userType) {
             throw new Error(data.error || "Failed to fetch courses");
         }
 
+        // 提取课程数据
         const coursesToDisplay = (userType === 2) ? data : data.courses;
-
-        const enrolledIds = (userType === 1) ? coursesToDisplay.map(c => c.id) : [];
+        // ✅ 核心修正：使用后端返回的真实已选 ID
+        const enrolledIds = (userType === 1) ? (data.enrolled_ids || []) : [];
 
         const mainContent = document.querySelector('.content-container');
+        
+        // 构建容器结构
         mainContent.innerHTML = `
             <section class="card">
-                <div class="card-title">My ${userType === 2 ? 'Managed' : 'Enrolled'} Courses</div>
-                <div id="my-course-list-container" class="course-grid">
+                <div class="card-title">
+                    ${userType === 2 ? 'My Managed Courses' : 'My Enrolled Courses'}
+                </div>
+                <div id="active-course-list" class="course-grid">
                     </div>
             </section>
         `;
-        const originalList = document.getElementById('course-list');
 
-        const targetContainer = document.getElementById('my-course-list-container');
-        targetContainer.id = 'course-list';
-
-        renderCourseList(coursesToDisplay, userType, enrolledIds);
-
-        targetContainer.id = 'my-course-list-container';
+        // 调用渲染函数并指定容器 ID
+        renderCourseList(coursesToDisplay, userType, enrolledIds, 'active-course-list');
 
     } catch (error) {
         console.error("Failed to load My Courses:", error);
@@ -816,80 +897,99 @@ function resetDashboardHTML() {
     const container = document.querySelector('.content-container');
     container.innerHTML = `
         <section class="card profile-card">
-            <div class="profile-header">
-                <div class="avatar-wrapper">
-                    <img id="user-photo" src="" alt="Profile" class="avatar">
+                <div class="profile-header">
+                    <div class="avatar-wrapper">
+                        <img id="user-photo" src="" alt="Profile" class="avatar">
+                    </div>
+                    <div class="profile-text">
+                        <h2 id="welcome-msg" class="welcome-text">Loading...</h2>
+
+                        <p id="status-display-row" class="status-text">
+                            Current Status: <span id="display-status">...</span>
+                        </p>
+                    </div>
                 </div>
-                <div class="profile-text">
-                    <h2 id="welcome-msg" class="welcome-text">Loading...</h2>
-                    <p class="status-text">Current Status: <span id="display-status">...</span></p>
+
+                <div id="status-update-section" class="status-input-group">
+                    <input type="text" id="status-input" placeholder="What's your learning goal today?">
+                    <button class="btn-action" onclick="postStatus()">Post Update</button>
                 </div>
-            </div>
-            <div class="status-input-group">
-                <input type="text" id="status-input" placeholder="What's your learning goal today?">
-                <button class="btn-action" onclick="postStatus()">Post Update</button>
-            </div>
-        </section>
+            </section>
 
-        <section class="card">
-            <div class="card-title">Notifications</div>
-            <div id="notification-list" style="max-height: 200px; overflow-y: auto;">
-                <p class="text-muted">Loading notifications...</p>
-            </div>
-        </section>
-
-        <section id="deadline-card" class="card deadline-card hidden">
-            <div class="card-title">Upcoming Deadlines</div>
-            <div id="deadline-list" class="deadline-container"></div>
-        </section>
-
-        <section id="teacher-search-card" class="card teacher-panel hidden">
-            <div class="card-title">Directory Search</div>
-            <p class="card-subtitle">Search for students or staff members by name.</p>
-            <div class="status-input-group">
-                <input type="text" id="search-box" placeholder="Enter name...">
-                <button class="btn-action btn-teacher" onclick="performSearch()">Search</button>
-            </div>
-            <div id="search-results" class="search-results-box"></div>
-        </section>
-
-        <section id="teacher-create-course-card" class="card teacher-panel hidden">
-            <div class="card-title">Create New Course</div>
-            <p class="card-subtitle">Add a new course template to the system directory.</p>
-            <div class="publish-form">
-                <input type="text" id="new-course-title" placeholder="Course Title" class="form-input">
-                <textarea id="new-course-desc" placeholder="Course description..." rows="2" class="form-textarea"></textarea>
-                <button class="btn-action btn-teacher" onclick="handleCreateCourse()">Create Course Template</button>
-            </div>
-        </section>
-
-        <section id="teacher-publish-card" class="card teacher-panel hidden">
-            <div class="card-title">Publish New Assignment</div>
-            <div class="publish-form">
-                <label for="course-dropdown" class="form-label">Select Course:</label>
-                <select id="course-dropdown" class="form-select">
-                    <option value="">-- Select a course you teach --</option>
-                </select>
-                <input type="text" id="asgn-title" placeholder="Assignment Title" class="form-input">
-                <textarea id="asgn-desc" placeholder="Requirements..." rows="3" class="form-textarea"></textarea>
-                <label for="asgn-deadline" class="form-label">Submission Deadline:</label>
-                <input type="datetime-local" id="asgn-deadline" class="form-input">
-                <div class="file-upload-section">
-                    <label>Upload Reference Materials (PDF/Images):</label>
-                    <input type="file" id="asgn-material" class="file-input-raw">
+            <section id="deadline-card" class="card deadline-card hidden">
+                <div class="card-title">Upcoming Deadlines</div>
+                <div id="deadline-list" class="deadline-container">
                 </div>
-                <button class="btn-action btn-teacher" onclick="handlePublishAssignment()">Confirm Publication</button>
-            </div>
-        </section>
+            </section>
 
-        <section class="card">
-            <div class="card-title" id="course-section-title">Explore Available Courses</div>
-            <div id="course-list" class="course-grid"></div>
-        </section>
+            <section class="card">
+                <div class="card-title">Notifications</div>
+                <div id="notification-list" style="max-height: 200px; overflow-y: auto;">
+                    <p class="text-muted">Loading notifications...</p>
+                </div>
+            </section>
 
-        <footer class="main-footer">
-            <p>CM3035 Coursework - eLearning App | Student ID: [Your ID]</p>
-        </footer>
+            <section id="teacher-search-card" class="card    teacher-panel hidden">
+                <div class="card-title">Directory Search</div>
+                <p class="card-subtitle">Search for students or staff members by name.</p>
+
+                <div class="status-input-group">
+                    <input type="text" id="search-box" placeholder="Enter name...">
+                    <button class="btn-action btn-teacher" onclick="performSearch()">Search</button>
+                </div>
+
+                <div id="search-results" class="search-results-box">
+                </div>
+            </section>
+
+            <section id="teacher-create-course-card" class="card teacher-panel hidden">
+                <div class="card-title">Create New Course</div>
+                <p class="card-subtitle">Add a new course template to the system directory.</p>
+                <div class="publish-form">
+                    <input type="text" id="new-course-title" placeholder="Course Title (e.g., Computer Science 101)"
+                        class="form-input">
+                    <textarea id="new-course-desc" placeholder="Course description and syllabus summary..." rows="2"
+                        class="form-textarea"></textarea>
+
+                    <button class="btn-action btn-teacher" onclick="handleCreateCourse()">Create Course
+                        Template</button>
+                </div>
+            </section>
+
+            <section id="teacher-publish-card" class="card teacher-panel hidden">
+                <div class="card-title">Publish New Assignment</div>
+                <div class="publish-form">
+                    <label for="course-dropdown" class="form-label">Select Course:</label>
+                    <select id="course-dropdown" class="form-select">
+                        <option value="">-- Select a course you teach --</option>
+                    </select>
+
+                    <input type="text" id="asgn-title" placeholder="Assignment Title (e.g., Midterm Project)"
+                        class="form-input">
+                    <textarea id="asgn-desc" placeholder="Detailed requirements and instructions..." rows="3"
+                        class="form-textarea"></textarea>
+
+                    <label for="asgn-deadline" class="form-label">Submission Deadline:</label>
+                    <input type="datetime-local" id="asgn-deadline" class="form-input">
+
+                    <div class="file-upload-section">
+                        <label>Upload Reference Materials (PDF/Images):</label>
+                        <input type="file" id="asgn-material" class="file-input-raw">
+                    </div>
+
+                    <button class="btn-action btn-teacher" onclick="handlePublishAssignment()">Confirm
+                        Publication</button>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-title" id="course-section-title">Explore Available Courses</div>
+                <div id="course-list" class="course-grid"></div>
+            </section>
+
+            <footer class="main-footer">
+                <p>CM3035 Coursework - eLearning App | Student ID: [Your ID]</p>
+            </footer>
     `;
 }
 
@@ -921,7 +1021,6 @@ if (settingsBtn) {
 }
 
 async function loadSettingsPage() {
-    stopChatPolling();
     const container = document.querySelector('.content-container');
 
     const response = await fetch('/api/home/');
@@ -1046,5 +1145,86 @@ async function handleChangePassword() {
         }
     } catch (error) {
         console.error("Change password error:", error);
+    }
+}
+
+function startNotificationPolling() {
+    if (notificationInterval) clearInterval(notificationInterval);
+    
+    notificationInterval = setInterval(() => {
+        const notificationList = document.getElementById('notification-list');
+        if (notificationList) {
+            loadNotifications();
+        }
+    }, 5000); 
+}
+
+function stopNotificationPolling() {
+    if (notificationInterval) {
+        clearInterval(notificationInterval);
+        notificationInterval = null;
+    }
+}
+
+async function removeStudent(courseId, studentId, studentName) {
+    if (!confirm(`Are you sure you want to remove ${studentName} from this course?`)) return;
+
+    try {
+        const response = await fetch(`/api/courses/${courseId}/remove-student/${studentId}/`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            alert(data.message);
+            viewCourseStudents(courseId); 
+        } else {
+            alert("Error: " + data.error);
+        }
+    } catch (e) {
+        console.error("Remove student error:", e);
+    }
+}
+
+async function viewFeedback(courseId, courseTitle) {
+    try {
+        const response = await fetch(`/api/course/${courseId}/all-feedback/`);
+        const feedbacks = await response.json();
+        
+        const mainContent = document.querySelector('.content-container');
+        let html = `
+            <section class="card animate-fade-in">
+                <div class="card-title">Course Feedback: ${courseTitle}</div>
+                <div class="feedback-list" style="margin-top: 20px;">
+        `;
+
+        if (feedbacks.length === 0) {
+            html += `<p class="text-muted">No feedback submitted for this course yet.</p>`;
+        } else {
+            feedbacks.forEach(f => {
+                html += `
+                    <div class="feedback-item" style="padding: 15px; border-bottom: 1px solid #eee; background: #f9f9f9; margin-bottom: 10px; border-radius: 8px;">
+                        <div style="display: flex; justify-content: space-between;">
+                            <strong style="color: #2c3e50;">${f.student_name}</strong>
+                            <small style="color: #95a5a6;">${f.date}</small>
+                        </div>
+                        <p style="margin-top: 8px; color: #34495e; font-style: italic;">"${f.content}"</p>
+                    </div>`;
+            });
+        }
+
+        html += `
+                </div>
+                <button class="btn-action" style="margin-top: 20px; background: #95a5a6;" onclick="loadHomeData()">Back to Dashboard</button>
+            </section>`;
+        
+        mainContent.innerHTML = html;
+    } catch (e) {
+        console.error("Feedback Error:", e);
     }
 }

@@ -33,6 +33,8 @@ urlpatterns = [
     path('api/user/<int:user_id>/profile/', views.get_user_profile),
     path('api/auth/change-password/', views.change_password, name='change-password'),
     path('api/auth/update-profile/', views.update_profile_settings),
+    path('api/courses/<int:course_id>/remove-student/<int:student_id>/', views.remove_student_from_course),
+    path('api/course/<int:course_id>/all-feedback/', views.view_course_feedback),
 
     path('api/', include(router.urls)),
 ]
